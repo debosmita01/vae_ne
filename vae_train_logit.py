@@ -8,8 +8,7 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
-from smb_helper import to_text, concat_segments, to_tnsor
-from SMB_models_2.of_smb_vae_1_1 import model
+#from smb_helper import to_text, concat_segments, to_tnsor
 from cmaes import CMA
 import ray
 
