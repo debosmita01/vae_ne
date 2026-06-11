@@ -8,8 +8,8 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
-#from smb_helper import to_text, concat_segments, to_tnsor
-from cmaes import CMA
+import cma
+from estool.es import CMAES
 import ray
 
 
@@ -94,9 +94,7 @@ def set_weights(model, weights):
 def set_nograd(model):
     for param in model.parameters():
         param.requires_grad = False
-        
-
-        
+                
 class MarioDataset(Dataset):
     def __init__(self, file, transform=None):
         data = [line for line in csv.reader(open(file))]
@@ -142,7 +140,7 @@ def categorical_cross_entropy(y_pred, y_true):
     return -(y_true * torch.log(y_pred)).sum(dim=1).mean()
 
 
-#@ray.remote
+@ray.remote
 def calc_fitness(weights, dataset):
     vae = VAE().float()
     vae = set_weights(vae, weights)
@@ -155,77 +153,65 @@ def calc_fitness(weights, dataset):
         #print(batch_loss, total_loss)
         cnt += 1
     loss = total_loss/cnt
-        
-    stats = {
-                "weights": np.array2string(weights),
-                "loss": loss,
-                "loss-type": "logit"
-            }
-    return loss, stats
+    return loss
 
 
 class CMA_ES:
-    def __init__(self, pop_size):
-        vae = VAE().float()
-        set_nograd(vae)
-        model_weights = get_weights(vae)
-        len_weights = len(model_weights)
-        
-        #int cmaes controler  Mean vector, standard deviation (sigma)
-        self._optimizer = CMA(mean=np.random.uniform(-5, 5, size=len_weights), sigma=.5, population_size=pop_size)
+    def __init__(self, len_weights, pop_size):        
+        self._solver = CMAES(len_weights,
+              popsize=pop_size,
+              weight_decay=0.0,
+              sigma_init = 0.5
+          )
        
 
-
     def evolve(self, dataset, gens, path):
+        history = []  
+        max_fit = -100
         best = None
-        min_fit = 100
         for g in range(gens+1): 
-            print("gen ", g)
-            #weights = [self._optimizer.ask() for _ in range(self._optimizer.population_size)]
-            vae = VAE().float()
-            set_nograd(vae)
-            weights = [get_weights(vae) for _ in range(self._optimizer.population_size)]
-        
-            #futures = [calc_fitness.remote(w, dataset) for w in weights]
-            #results = ray.get(futures)
-            
-            fitness = []
-            for w in weights:
-                fit, stat = calc_fitness(w, dataset)
-                fitness.append(fit)
-                if fit <= min_fit:
-                    min_fit = fit
-                    best = stat
-                    
-            '''for i in range(len(results)):
-                r = results[i]
-                fitness.append(r)
-                if r <= min_fit:
-                    min_fit = r
-                    best = r'''
-            print("gen: {} gen_best: {} global_best:{}\n".format(g, min(fitness), min_fit))
-            '''log_file = open(path + "/log.txt", "a")
-            log_file.write("gen: {} gen_best: {} global_best:{}\n".format(g, min(fitness), min_fit))
-            log_file.close()'''
-               
-            # Re-package data into format expected by cmaes library
-            solutions = list(zip(weights, fitness))
-      
-            # Pass data back into optimizer to shift the search center
-            #self._optimizer.tell(solutions)
-             
-        '''for i in range(len(weights)):
-            with open(path  + "/" + str(i) + ".json", 'w') as f:
-                f.write(json.dumps(r[1]))
-            cnt += 1
-        
-        with open(path  + "/best.json", 'w') as f:
-            f.write(json.dumps(best[1]))'''
+            weights = self._solver.ask() 
+            futures = [calc_fitness.remote(w, dataset) for w in weights]
+            fitness_list = ray.get(futures)
+                         
+            self._solver.tell(futures)
+            result = self._solver.result() # first element is the best solution, second element is the best fitness
 
+            history.append(result[1])
+
+            if result[1] >= max_fit:
+                max_fit = result[1]
+                best = result[0]
+            '''log_file = open(path + "/log.txt", "a")
+            log_file.write("gen: {} gen_best: {} global_best:{}\n".format(g, result[1], max_fit))
+            log_file.close()'''
+            print("fitness at iteration:", (g+1), result[1], " global best": max_fit)
+            
+        '''for r in result:
+            with open(path  + "/" + str(i) + ".json", 'w') as f:
+                stats = {
+                    "weights": np.array2string(r[0]),
+                    "loss": r[1],
+                    "loss-type": "logit"
+                }
+                f.write(json.dumps(stats))
+            cnt += 1        
+        with open(path  + "/best.json", 'w') as f:
+            stats = {
+                    "weights": np.array2string(r[0]),
+                    "loss": r[1],
+                    "loss-type": "logit"
+            }
+            f.write(json.dumps(stats))'''
+        
 def main():
     fitness = "logit_loss"
     pop_size = 10
     generations = 5
+    
+    vae = VAE().float()
+    set_nograd(vae)
+    len_weights = len(get_weights(vae))
     
     mario_data = MarioDataset("./SMB_Compare/smb_tr_data.csv")
     dloader = DataLoader(mario_data, batch_size=64, shuffle=True, num_workers=0)
@@ -242,9 +228,13 @@ def main():
             }
         f.write(json.dumps(temp))'''
 
-    cma_es = CMA_ES(pop_size)
+    cma_es = CMA_ES(len_weights, pop_size)
     cma_es.evolve(dloader, generations, save_path)
 
-#ray.init(num_cpus=2)
+'''if ray.is_initialized():
+    ray.shutdown()
+ray.init(num_cpus=2)'''
 if __name__ == '__main__':
     main()
+
+
